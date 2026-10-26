@@ -34,13 +34,35 @@ public class PipRenderer {
     private static boolean renderingPip;
 
     /**
-     * 是否已加载 Iris / Oculus 光影。它们接管了世界渲染管线，
-     * 画中画二次渲染世界会触发 "pipeline is null" 致命崩溃（按 F4 卡死），
-     * 因此检测到光影时必须跳过世界渲染，只显示提示。
+     * 是否已加载 Iris / Oculus 光影。它们接管了世界渲染管线。
+     * 有光影时必须先通过 preparePipeline 把管线备好，否则画中画二次渲染
+     * 会触发 "WorldRenderingPipeline.setPhase ... pipeline is null" 致命崩溃（按 F4 卡死）。
      */
     private static boolean hasIris() {
         ModList modList = ModList.get();
         return modList.isLoaded("iris") || modList.isLoaded("oculus");
+    }
+
+    /**
+     * 用反射调用 Iris 的 PipelineManager.preparePipeline(...)，
+     * 确保 Iris 的当前管线非空，从而允许画中画二次渲染世界而不崩溃。
+     * 无光影包时会得到 VanillaRenderingPipeline；失败则返回 false（上层跳过渲染）。
+     */
+    private static boolean prepareIrisPipeline() {
+        try {
+            Class<?> iris = Class.forName("net.irisshaders.iris.Iris");
+            java.lang.reflect.Method getPm = iris.getMethod("getPipelineManager");
+            Object pm = getPm.invoke(null);
+            java.lang.reflect.Method getDim = iris.getMethod("getCurrentDimension");
+            Object dim = getDim.invoke(null);
+            Class<?> namespacedId = Class.forName("net.irisshaders.iris.shaderpack.materialmap.NamespacedId");
+            java.lang.reflect.Method prepare = pm.getClass().getMethod("preparePipeline", namespacedId);
+            Object pipeline = prepare.invoke(pm, dim);
+            return pipeline != null;
+        } catch (Throwable t) {
+            LOGGER.warn("[F4Hud] Iris pipeline prepare failed, PIP will be skipped", t);
+            return false;
+        }
     }
 
     @SubscribeEvent
@@ -49,8 +71,10 @@ public class PipRenderer {
             return;
         }
         if (hasIris()) {
-            // 光影环境下不二次渲染世界，避免致命 NPE
-            return;
+            // 有光影：先确保管线已备好；准备失败则跳过，避免崩溃
+            if (!prepareIrisPipeline()) {
+                return;
+            }
         }
 
         Minecraft mc = Minecraft.getInstance();
@@ -108,19 +132,17 @@ public class PipRenderer {
         int x = screenW - margin - w;
         int y = margin;
 
-        if (hasIris()) {
-            // 光影模式下无法安全渲染画中画世界画面，显示提示
-            try {
-                guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
-                guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
-                guiGraphics.drawString(mc.font, "F4Hud: 光影模式下画中画不可用", x + 6, y + 6, 0xFFFFFF, false);
-            } catch (Throwable t) {
-                LOGGER.error("[F4Hud] PIP hint draw failed", t);
-            }
-            return;
-        }
-
         if (pipTarget == null) {
+            // 画面未渲染出来（例如 Iris 管线无法准备时），显示提示
+            if (hasIris()) {
+                try {
+                    guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
+                    guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
+                    guiGraphics.drawString(mc.font, "F4Hud: 光影模式下画中画不可用", x + 6, y + 6, 0xFFFFFF, false);
+                } catch (Throwable t) {
+                    LOGGER.error("[F4Hud] PIP hint draw failed", t);
+                }
+            }
             return;
         }
 
