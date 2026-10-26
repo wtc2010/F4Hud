@@ -14,6 +14,7 @@ import net.minecraft.server.packs.resources.ResourceManager;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import org.joml.Matrix4f;
@@ -32,9 +33,23 @@ public class PipRenderer {
     private static ResourceLocation pipTexLoc;
     private static boolean renderingPip;
 
+    /**
+     * 是否已加载 Iris / Oculus 光影。它们接管了世界渲染管线，
+     * 画中画二次渲染世界会触发 "pipeline is null" 致命崩溃（按 F4 卡死），
+     * 因此检测到光影时必须跳过世界渲染，只显示提示。
+     */
+    private static boolean hasIris() {
+        ModList modList = ModList.get();
+        return modList.isLoaded("iris") || modList.isLoaded("oculus");
+    }
+
     @SubscribeEvent
     public static void onRenderLevelStage(RenderLevelStageEvent event) {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
+            return;
+        }
+        if (hasIris()) {
+            // 光影环境下不二次渲染世界，避免致命 NPE
             return;
         }
 
@@ -82,11 +97,10 @@ public class PipRenderer {
 
     public static void draw(GuiGraphics guiGraphics) {
         Minecraft mc = Minecraft.getInstance();
-        if (pipTarget == null || !PipState.active) {
+        if (!PipState.active) {
             return;
         }
 
-        ensureTextureRegistered(mc);
         int screenW = mc.getWindow().getGuiScaledWidth();
         int margin = 12;
         int w = Math.min(480, screenW / 3);
@@ -94,6 +108,23 @@ public class PipRenderer {
         int x = screenW - margin - w;
         int y = margin;
 
+        if (hasIris()) {
+            // 光影模式下无法安全渲染画中画世界画面，显示提示
+            try {
+                guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
+                guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
+                guiGraphics.drawString(mc.font, "F4Hud: 光影模式下画中画不可用", x + 6, y + 6, 0xFFFFFF, false);
+            } catch (Throwable t) {
+                LOGGER.error("[F4Hud] PIP hint draw failed", t);
+            }
+            return;
+        }
+
+        if (pipTarget == null) {
+            return;
+        }
+
+        ensureTextureRegistered(mc);
         try {
             guiGraphics.blit(pipTexLoc, x, y, 0f, 180.0f, w, -h, PIP_W, PIP_H);
             guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
