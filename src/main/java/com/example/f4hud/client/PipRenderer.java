@@ -3,21 +3,19 @@ package com.example.f4hud.client;
 import com.mojang.blaze3d.pipeline.RenderTarget;
 import com.mojang.blaze3d.pipeline.TextureTarget;
 import com.mojang.blaze3d.systems.RenderSystem;
-import net.minecraft.client.Camera;
 import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphics;
-import net.minecraft.client.renderer.LightTexture;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.packs.resources.ResourceManager;
-import net.minecraft.world.phys.Vec3;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.ModList;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import org.joml.Matrix4f;
+import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 import java.util.function.Supplier;
@@ -32,37 +30,11 @@ public class PipRenderer {
     private static TextureTarget pipTarget;
     private static ResourceLocation pipTexLoc;
     private static boolean renderingPip;
+    private static boolean pipFailedOnce;
 
-    /**
-     * 是否已加载 Iris / Oculus 光影。它们接管了世界渲染管线。
-     * 有光影时必须先通过 preparePipeline 把管线备好，否则画中画二次渲染
-     * 会触发 "WorldRenderingPipeline.setPhase ... pipeline is null" 致命崩溃（按 F4 卡死）。
-     */
     private static boolean hasIris() {
         ModList modList = ModList.get();
         return modList.isLoaded("iris") || modList.isLoaded("oculus");
-    }
-
-    /**
-     * 用反射调用 Iris 的 PipelineManager.preparePipeline(...)，
-     * 确保 Iris 的当前管线非空，从而允许画中画二次渲染世界而不崩溃。
-     * 无光影包时会得到 VanillaRenderingPipeline；失败则返回 false（上层跳过渲染）。
-     */
-    private static boolean prepareIrisPipeline() {
-        try {
-            Class<?> iris = Class.forName("net.irisshaders.iris.Iris");
-            java.lang.reflect.Method getPm = iris.getMethod("getPipelineManager");
-            Object pm = getPm.invoke(null);
-            java.lang.reflect.Method getDim = iris.getMethod("getCurrentDimension");
-            Object dim = getDim.invoke(null);
-            Class<?> namespacedId = Class.forName("net.irisshaders.iris.shaderpack.materialmap.NamespacedId");
-            java.lang.reflect.Method prepare = pm.getClass().getMethod("preparePipeline", namespacedId);
-            Object pipeline = prepare.invoke(pm, dim);
-            return pipeline != null;
-        } catch (Throwable t) {
-            LOGGER.warn("[F4Hud] Iris pipeline prepare failed, PIP will be skipped", t);
-            return false;
-        }
     }
 
     @SubscribeEvent
@@ -70,13 +42,6 @@ public class PipRenderer {
         if (event.getStage() != RenderLevelStageEvent.Stage.AFTER_PARTICLES) {
             return;
         }
-        if (hasIris()) {
-            // 有光影：先确保管线已备好；准备失败则跳过，避免崩溃
-            if (!prepareIrisPipeline()) {
-                return;
-            }
-        }
-
         Minecraft mc = Minecraft.getInstance();
         if (mc.level == null || mc.player == null) {
             return;
@@ -84,20 +49,25 @@ public class PipRenderer {
         if (!PipState.active || renderingPip) {
             return;
         }
+        // 之前已经在 Iris 下渲染失败过，就不再每帧重试（避免刷错误/卡顿），
+        // 由 draw() 显示提示框。
+        if (pipFailedOnce) {
+            return;
+        }
 
         ensureTarget();
         DeltaTracker partialTick = event.getPartialTick();
-        float partial = partialTick.getGameTimeDeltaPartialTick(false);
 
-        Camera camera = new Camera();
-        camera.setup(mc.level, mc.player, true, false, partial);
-        Vec3 camPos = camera.getPosition();
+        // 用 F4 按下时捕获的固定位姿构建相机矩阵，而不是玩家当前视角。
+        float yawRad = PipState.camYaw * ((float) Math.PI / 180f);
+        float pitchRad = PipState.camPitch * ((float) Math.PI / 180f);
+        Quaternionf camRot = new Quaternionf().rotateYXZ(-yawRad, -pitchRad, 0.0f);
 
-        float aspect = 320.0f / 180.0f;
+        float aspect = (float) PIP_W / (float) PIP_H;
         Matrix4f projection = new Matrix4f().setPerspective(
                 (float) Math.toRadians(70.0d), aspect, 0.05f, 2000.0f);
-        Matrix4f view = new Matrix4f().rotation(camera.rotation()).invert();
-        view.translate(new Vector3f((float) -camPos.x, (float) -camPos.y, (float) -camPos.z));
+        Matrix4f view = new Matrix4f().rotation(camRot).invert();
+        view.translate(new Vector3f((float) -PipState.camX, (float) -PipState.camY, (float) -PipState.camZ));
 
         RenderTarget mainTarget = mc.getMainRenderTarget();
 
@@ -106,14 +76,17 @@ public class PipRenderer {
             pipTarget.bindWrite(false);
             RenderSystem.clearColor(0f, 0f, 0f, 0f);
             RenderSystem.clear(16640, true);
-            event.getLevelRenderer().renderLevel(partialTick, false, camera,
+            // 用一个临时相机对象（位置/朝向由上面的 view 矩阵决定）。
+            // 直接复用玩家相机实例即可，渲染管线只读取传入的 projection/view。
+            event.getLevelRenderer().renderLevel(partialTick, false, mc.gameRenderer.getMainCamera(),
                     mc.gameRenderer, mc.gameRenderer.lightTexture(), projection, view);
             renderingPip = false;
             pipTarget.unbindWrite();
         } catch (Throwable t) {
-            LOGGER.error("[F4Hud] PIP render failed", t);
+            LOGGER.warn("[F4Hud] PIP render failed (likely Iris incompat), showing hint", t);
             renderingPip = false;
-            pipTarget.unbindWrite();
+            pipFailedOnce = true;
+            try { pipTarget.unbindWrite(); } catch (Throwable ignored) {}
         } finally {
             mainTarget.bindWrite(false);
         }
@@ -132,16 +105,15 @@ public class PipRenderer {
         int x = screenW - margin - w;
         int y = margin;
 
-        if (pipTarget == null) {
-            // 画面未渲染出来（例如 Iris 管线无法准备时），显示提示
-            if (hasIris()) {
-                try {
-                    guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
-                    guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
-                    guiGraphics.drawString(mc.font, "F4Hud: 光影模式下画中画不可用", x + 6, y + 6, 0xFFFFFF, false);
-                } catch (Throwable t) {
-                    LOGGER.error("[F4Hud] PIP hint draw failed", t);
-                }
+        if (pipTarget == null || pipFailedOnce) {
+            // 画面没渲染出来（Iris 下二次渲染不可用），显示提示框
+            try {
+                guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
+                guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
+                String msg = hasIris() ? "F4Hud: 光影下画中画渲染不可用" : "F4Hud: 画中画渲染未就绪";
+                guiGraphics.drawString(mc.font, msg, x + 6, y + 6, 0xFFFFFF, false);
+            } catch (Throwable t) {
+                LOGGER.error("[F4Hud] PIP hint draw failed", t);
             }
             return;
         }
