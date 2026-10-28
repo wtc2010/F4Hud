@@ -18,9 +18,10 @@ public class HudOverlay {
         if (KeyBindings.TOGGLE_HUD.consumeClick()) {
             Minecraft mc = Minecraft.getInstance();
             if (!PipState.active) {
-                // 刚打开：捕获当前相机位姿，之后小窗固定从这个视角渲染
+                // 刚打开：捕获当前相机位姿，并重置一次性渲染标记（下次渲染一帧静态画面）
                 Camera cam = mc.gameRenderer.getMainCamera();
                 PipState.capture(cam.getPosition(), cam.getYRot(), cam.getXRot());
+                PipRenderer.resetOnToggle();
             }
             PipState.active = !PipState.active;
         }

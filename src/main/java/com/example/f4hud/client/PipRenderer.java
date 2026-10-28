@@ -31,10 +31,18 @@ public class PipRenderer {
     private static ResourceLocation pipTexLoc;
     private static boolean renderingPip;
     private static boolean pipFailedOnce;
+    /** 按 F4 后只渲染一帧静态画面（小窗本来就固定不动），避免每帧二次世界渲染把游戏卡死 */
+    private static boolean pipRenderedOnce;
 
     private static boolean hasIris() {
         ModList modList = ModList.get();
         return modList.isLoaded("iris") || modList.isLoaded("oculus");
+    }
+
+    /** F4 切换关闭时调用：清空一次性渲染标记，下次打开重新渲染一帧 */
+    public static void resetOnToggle() {
+        pipRenderedOnce = false;
+        pipFailedOnce = false;
     }
 
     @SubscribeEvent
@@ -52,6 +60,10 @@ public class PipRenderer {
         // 之前已经在 Iris 下渲染失败过，就不再每帧重试（避免刷错误/卡顿），
         // 由 draw() 显示提示框。
         if (pipFailedOnce) {
+            return;
+        }
+        // 已经渲染过一帧静态画面了：小窗固定不动，不需要重复渲染
+        if (pipRenderedOnce) {
             return;
         }
 
@@ -76,11 +88,10 @@ public class PipRenderer {
             pipTarget.bindWrite(false);
             RenderSystem.clearColor(0f, 0f, 0f, 0f);
             RenderSystem.clear(16640, true);
-            // 用一个临时相机对象（位置/朝向由上面的 view 矩阵决定）。
-            // 直接复用玩家相机实例即可，渲染管线只读取传入的 projection/view。
             event.getLevelRenderer().renderLevel(partialTick, false, mc.gameRenderer.getMainCamera(),
                     mc.gameRenderer, mc.gameRenderer.lightTexture(), projection, view);
             renderingPip = false;
+            pipRenderedOnce = true;
             pipTarget.unbindWrite();
         } catch (Throwable t) {
             LOGGER.warn("[F4Hud] PIP render failed (likely Iris incompat), showing hint", t);
@@ -106,7 +117,6 @@ public class PipRenderer {
         int y = margin;
 
         if (pipTarget == null || pipFailedOnce) {
-            // 画面没渲染出来（Iris 下二次渲染不可用），显示提示框
             try {
                 guiGraphics.fill(x - 2, y - 2, x + w + 2, y + h + 2, -1);
                 guiGraphics.fill(x - 1, y - 1, x + w + 1, y + h + 1, -16777216);
