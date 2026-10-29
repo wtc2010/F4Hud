@@ -5,13 +5,14 @@ issueTrackerURL="https://github.com/wtc2010/F4Hud/issues"
 
 [[mods]]
 modId="f4hud"
-version="1.0.3"
+version="1.0.4"
 displayName="F4Hud"
 credits="wtc2010"
 authors="wtc2010"
 description='''建筑辅助画中画模组。
 按 F4 在屏幕右上角弹出一个固定不动的小窗口，冻结按下那一刻的视角；
-再按一次 F4 收起。方便建筑时不用频繁切换旁观模式。'''
+再按一次 F4 收起。方便建筑时不用频繁切换旁观模式。
+注意：与 Iris 光影同存时为避免崩溃，不做第二次世界渲染。'''
 
 [[dependencies.f4hud]]
 modId="neoforge"

@@ -57,8 +57,14 @@ public class PipRenderer {
         if (!PipState.active || renderingPip) {
             return;
         }
-        // 之前已经在 Iris 下渲染失败过，就不再每帧重试（避免刷错误/卡顿），
-        // 由 draw() 显示提示框。
+        // Iris/光影存在时：二次世界渲染会把 Iris 的单例渲染管线搞成 null，
+        // 导致下一帧主渲染 beginClouds 空指针崩溃（崩在主渲染里，try/catch 救不了）。
+        // 所以 Iris 存在时直接不做二次渲染，只显示提示框，保证游戏不崩。
+        if (hasIris()) {
+            pipFailedOnce = true;
+            return;
+        }
+        // 之前已经渲染失败过，就不再重试，由 draw() 显示提示框。
         if (pipFailedOnce) {
             return;
         }
